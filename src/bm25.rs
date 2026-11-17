@@ -3,9 +3,10 @@
 //! the top k slots are picked out with a small heap.
 
 use std::cmp::Reverse;
-use std::collections::BinaryHeap;
+use std::collections::{BinaryHeap, HashMap};
 
 use crate::index::Index;
+use crate::maxscore::{blocks_for, Blocks};
 use crate::tokenize::Tokenizer;
 
 // k1: how fast repeated terms stop counting. b: how much long documents are
@@ -15,7 +16,7 @@ fn param(name: &str, default: f32) -> f32 {
 }
 
 #[derive(PartialEq, PartialOrd)]
-struct Hit(f32, u32);
+pub struct Hit(pub f32, pub u32);
 impl Eq for Hit {}
 impl Ord for Hit {
     fn cmp(&self, o: &Self) -> std::cmp::Ordering {
@@ -24,20 +25,32 @@ impl Ord for Hit {
 }
 
 pub struct Searcher<'a> {
-    index: &'a Index,
-    tok: Tokenizer,
+    pub(crate) index: &'a Index,
+    pub(crate) tok: Tokenizer,
     scores: Vec<f32>,
     touched: Vec<u32>,
     // the length part of BM25's denominator, precomputed per document
-    norm: Vec<f32>,
-    k1: f32,
+    pub(crate) norm: Vec<f32>,
+    pub(crate) k1: f32,
+    // skip data for MaxScore, built the first time a term is queried
+    pub(crate) blocks: HashMap<String, Blocks>,
 }
 
 impl<'a> Searcher<'a> {
     pub fn new(index: &'a Index) -> Self {
         let (k1, b) = (param("BM25_K1", 0.9), param("BM25_B", 0.4));
         let norm = index.doc_len.iter().map(|&l| k1 * (1.0 - b + b * l as f32 / index.avg_len)).collect();
-        Searcher { index, tok: Tokenizer::new(), scores: vec![0.0; index.num_docs()], touched: Vec::new(), norm, k1 }
+        Searcher { index, tok: Tokenizer::new(), scores: vec![0.0; index.num_docs()], touched: Vec::new(), norm, k1, blocks: HashMap::new() }
+    }
+
+    pub(crate) fn ensure_blocks(&mut self, term: &str) {
+        if self.blocks.contains_key(term) {
+            return;
+        }
+        if let Some(&info) = self.index.terms.get(term) {
+            let b = blocks_for(self.index, info, &self.norm, self.k1);
+            self.blocks.insert(term.to_string(), b);
+        }
     }
 
     pub fn idf(&self, df: u32) -> f32 {

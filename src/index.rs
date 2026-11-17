@@ -145,10 +145,14 @@ impl Index {
         self.doc_len.len()
     }
 
+    pub fn postings_of(&self, info: TermInfo) -> &[u8] {
+        &self.postings[info.offset as usize..(info.offset + info.len as u64) as usize]
+    }
+
     /// Walk a term's postings, calling f(doc, tf) for each.
     #[inline]
     pub fn for_each_posting(&self, info: TermInfo, mut f: impl FnMut(u32, u32)) {
-        let bytes = &self.postings[info.offset as usize..(info.offset + info.len as u64) as usize];
+        let bytes = self.postings_of(info);
         let mut pos = 0;
         let mut doc = 0;
         while pos < bytes.len() {
