@@ -1,0 +1,35 @@
+name: rerank
+
+# Cross-encoder reranking of the top 50 from each first-stage run. ~170k
+# model calls per run is about 5 hours on one CPU; 6 shards per run on
+# separate runners brings it under an hour.
+on:
+  workflow_dispatch:
+
+jobs:
+  shard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      matrix:
+        run: [bm25, dense, hybrid]
+        shard: [0, 1, 2, 3, 4, 5]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - name: download corpus and queries
+        run: |
+          base=https://huggingface.co/datasets/BeIR/nq/resolve/main
+          curl -sSL -o corpus.parquet $base/corpus/corpus-00000-of-00001.parquet
+          curl -sSL -o queries.parquet $base/queries/queries-00000-of-00001.parquet
+      - name: rerank
+        run: |
+          mkdir -p out
+          uv run python eval/rerank.py results/first-stage/${{ matrix.run }}.tsv out/${{ matrix.run }}-${{ matrix.shard }}.tsv \
+            --corpus corpus.parquet --queries queries.parquet --top 50 --shard ${{ matrix.shard }} --of 6
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.run }}-${{ matrix.shard }}
+          path: out/
+          retention-days: 14
