@@ -32,8 +32,7 @@ impl Ord for D {
 pub fn dot(a: &[f32], b: &[f32]) -> f32 {
     // eight accumulators so the compiler can keep a whole AVX register busy
     let mut acc = [0f32; 8];
-    let (ca, cb) = (a.chunks_exact(8), b.chunks_exact(8));
-    for (x, y) in ca.zip(cb) {
+    for (x, y) in a.chunks_exact(8).zip(b.chunks_exact(8)) {
         for i in 0..8 {
             acc[i] += x[i] * y[i];
         }
@@ -250,16 +249,6 @@ impl Hnsw {
         h
     }
 
-    pub fn search(&self, v: &Vectors, q: &[f32], k: usize, ef: usize, seen: &mut Visited) -> Vec<(u32, f32)> {
-        let (ep, top) = *self.entry.lock();
-        let start = if top > 0 { self.greedy(v, q, top, 1, ep) } else { ep };
-        self.search_layer(v, q, &[start], ef.max(k), 0, seen)
-            .into_iter()
-            .take(k)
-            .map(|d| (d.1, 1.0 - d.0))
-            .collect()
-    }
-
     pub fn save(&self, path: &Path) -> Result<()> {
         let mut w = BufWriter::new(File::create(path)?);
         let (ep, top) = *self.entry.lock();
@@ -304,6 +293,92 @@ impl Hnsw {
         }
         Ok(Hnsw { m: m as usize, m0: 2 * m as usize, ef_build: ef_build as usize, links, entry: Mutex::new((ep, top as usize)) })
     }
+
+    /// The graph never changes once built, so search doesn't need locks or
+    /// per-node allocations: layer 0, where nearly all the work happens,
+    /// becomes one flat array with a fixed slot per node.
+    pub fn freeze(self) -> Frozen {
+        let stride = self.m0 + 1;
+        let n = self.links.len();
+        let mut l0 = vec![0u32; n * stride];
+        let mut upper = Vec::with_capacity(n);
+        for (i, l) in self.links.into_iter().enumerate() {
+            let mut l = l.into_inner();
+            let slot = &mut l0[i * stride..(i + 1) * stride];
+            slot[0] = l[0].len() as u32;
+            slot[1..1 + l[0].len()].copy_from_slice(&l[0]);
+            l.remove(0);
+            upper.push(l);
+        }
+        let (entry, top) = self.entry.into_inner();
+        Frozen { stride, l0, upper, entry, top }
+    }
+}
+
+pub struct Frozen {
+    stride: usize,
+    l0: Vec<u32>,              // per node: [count, links...] padded to stride
+    upper: Vec<Vec<Vec<u32>>>, // per node: links on layers 1.. (empty for most nodes)
+    entry: u32,
+    top: usize,
+}
+
+impl Frozen {
+    #[inline]
+    fn nbrs(&self, node: u32, layer: usize) -> &[u32] {
+        if layer == 0 {
+            let b = node as usize * self.stride;
+            &self.l0[b + 1..b + 1 + self.l0[b] as usize]
+        } else {
+            &self.upper[node as usize][layer - 1]
+        }
+    }
+
+    fn search_layer(&self, v: &Vectors, q: &[f32], start: u32, ef: usize, seen: &mut Visited) -> Vec<D> {
+        seen.reset();
+        seen.insert(start);
+        let d0 = D(Hnsw::dist(v, q, start), start);
+        let mut cand = BinaryHeap::from([Reverse(d0)]);
+        let mut best = BinaryHeap::from([d0]);
+        while let Some(Reverse(c)) = cand.pop() {
+            if best.len() >= ef && c.0 > best.peek().unwrap().0 {
+                break;
+            }
+            for &n in self.nbrs(c.1, 0) {
+                if !seen.insert(n) {
+                    continue;
+                }
+                let d = Hnsw::dist(v, q, n);
+                if best.len() < ef || d < best.peek().unwrap().0 {
+                    cand.push(Reverse(D(d, n)));
+                    best.push(D(d, n));
+                    if best.len() > ef {
+                        best.pop();
+                    }
+                }
+            }
+        }
+        best.into_sorted_vec()
+    }
+
+    pub fn search(&self, v: &Vectors, q: &[f32], k: usize, ef: usize, seen: &mut Visited) -> Vec<(u32, f32)> {
+        let (mut cur, mut cur_d) = (self.entry, Hnsw::dist(v, q, self.entry));
+        for layer in (1..=self.top).rev() {
+            loop {
+                let mut moved = false;
+                for &n in self.nbrs(cur, layer) {
+                    let d = Hnsw::dist(v, q, n);
+                    if d < cur_d {
+                        (cur, cur_d, moved) = (n, d, true);
+                    }
+                }
+                if !moved {
+                    break;
+                }
+            }
+        }
+        self.search_layer(v, q, cur, ef.max(k), seen).into_iter().take(k).map(|d| (d.1, 1.0 - d.0)).collect()
+    }
 }
 
 #[cfg(test)]
@@ -324,7 +399,7 @@ mod tests {
             v.iter_mut().for_each(|x| *x /= len);
         }
         let v = Vectors { dim, data };
-        let h = Hnsw::build(&v, Params { m: 12, ef_build: 100 });
+        let h = Hnsw::build(&v, Params { m: 12, ef_build: 100 }).freeze();
         let mut seen = Visited::new(n);
         let mut hit = 0;
         for qi in 0..100u32 {

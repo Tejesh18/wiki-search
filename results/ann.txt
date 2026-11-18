@@ -1,0 +1,20 @@
+round 1 done (mine -> hnswlib -> faiss)
+round 2 done (hnswlib -> faiss -> mine)
+round 3 done (faiss -> mine -> hnswlib)
+
+           ef  recall@10   p50 ms   p99 ms   (median of 3 rounds)
+mine       16      0.839     0.14     0.29
+mine       32      0.916     0.20     0.40
+mine       64      0.954     0.34     0.59
+mine      128      0.975     0.58     0.92
+mine      256      0.988     1.07     1.76
+hnswlib    16      0.827     0.15     0.28
+hnswlib    32      0.905     0.21     0.38
+hnswlib    64      0.947     0.35     0.56
+hnswlib   128      0.972     0.60     0.91
+hnswlib   256      0.984     1.09     1.61
+faiss      16      0.836     0.12     0.27
+faiss      32      0.911     0.19     0.38
+faiss      64      0.949     0.33     0.63
+faiss     128      0.972     0.56     0.87
+faiss     256      0.986     1.03     1.52

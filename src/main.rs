@@ -45,14 +45,15 @@ fn main() -> Result<()> {
             h.save(Path::new(&args[2]))?;
         }
         Some("hnsw-run") if args.len() >= 8 => {
-            let h = hnsw::Hnsw::load(Path::new(&args[1]))?;
             let v = hnsw::Vectors::load(Path::new(&args[2]), DIM)?;
+            let n = v.len();
+            let h = hnsw::Hnsw::load(Path::new(&args[1]))?.freeze();
             let ids: Vec<String> = std::fs::read_to_string(&args[3])?.lines().map(String::from).collect();
             let q = hnsw::Vectors::load(Path::new(&args[4]), DIM)?;
             let qids: Vec<String> = std::fs::read_to_string(&args[5])?.lines().map(String::from).collect();
             let ef: usize = args[7].parse()?;
             let k = args.get(8).map(|s| s.parse()).transpose()?.unwrap_or(100);
-            let mut seen = hnsw::Visited::new(v.len());
+            let mut seen = hnsw::Visited::new(n);
             let mut w = BufWriter::new(File::create(&args[6])?);
             let mut times = Vec::new();
             for (i, qid) in qids.iter().enumerate() {

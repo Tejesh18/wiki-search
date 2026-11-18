@@ -14,7 +14,8 @@ import numpy as np
 
 def main():
     parts, ids_path, out = Path(sys.argv[1]), Path(sys.argv[2]), Path(sys.argv[3])
-    files = sorted(parts.glob("part-*/part-*.npy"))
+    # by file name: the download folders are part-0, part-1, part-10... and sort wrong
+    files = sorted(parts.glob("part-*/part-*.npy"), key=lambda p: p.name)
     want = ids_path.read_text().split("\n")[:-1]
     got = []
     with open(out / "corpus.f32", "wb") as f:
@@ -31,8 +32,9 @@ def main():
     q /= np.linalg.norm(q, axis=1, keepdims=True)
     best_s = np.full((len(q), 100), -np.inf, dtype=np.float32)
     best_i = np.zeros((len(q), 100), dtype=np.int64)
-    for start in range(0, len(docs), 200_000):
-        s = q @ docs[start:start + 200_000].T
+    # 20k docs at a time: the score matrix for 200k was ~3 GB plus as much again for argpartition
+    for start in range(0, len(docs), 20_000):
+        s = q @ docs[start:start + 20_000].T
         top = np.argpartition(-s, 100, axis=1)[:, :100]
         cs = np.concatenate([best_s, np.take_along_axis(s, top, 1)], 1)
         ci = np.concatenate([best_i, top + start], 1)
