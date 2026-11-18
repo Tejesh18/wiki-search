@@ -1,4 +1,5 @@
 mod bm25;
+mod hnsw;
 mod index;
 mod maxscore;
 mod tokenize;
@@ -17,6 +18,9 @@ const USAGE: &str = "usage:
   wiki-search query <index dir> <words...>
   wiki-search compare <index dir> <queries.jsonl>          check MaxScore returns what exhaustive scoring does
 
+  wiki-search hnsw-build <vectors.f32> <graph out> [m] [ef_build]
+  wiki-search hnsw-run <graph> <vectors.f32> <ids.txt> <queries.f32> <qids.txt> <run.tsv> <ef> [k]
+
 SEARCH_ALGO=taat|maxscore picks the scorer (default maxscore).";
 
 fn main() -> Result<()> {
@@ -30,6 +34,37 @@ fn main() -> Result<()> {
         Some("run") if args.len() >= 4 => {
             let k = args.get(4).map(|s| s.parse()).transpose()?.unwrap_or(100);
             run(Path::new(&args[1]), Path::new(&args[2]), Path::new(&args[3]), k)?;
+        }
+        Some("hnsw-build") if args.len() >= 3 => {
+            let v = hnsw::Vectors::load(Path::new(&args[1]), DIM)?;
+            let m = args.get(3).map(|s| s.parse()).transpose()?.unwrap_or(16);
+            let ef_build = args.get(4).map(|s| s.parse()).transpose()?.unwrap_or(200);
+            let t = Instant::now();
+            let h = hnsw::Hnsw::build(&v, hnsw::Params { m, ef_build });
+            eprintln!("{} vectors, m={m} ef_build={ef_build}, built in {:.0?}", v.len(), t.elapsed());
+            h.save(Path::new(&args[2]))?;
+        }
+        Some("hnsw-run") if args.len() >= 8 => {
+            let h = hnsw::Hnsw::load(Path::new(&args[1]))?;
+            let v = hnsw::Vectors::load(Path::new(&args[2]), DIM)?;
+            let ids: Vec<String> = std::fs::read_to_string(&args[3])?.lines().map(String::from).collect();
+            let q = hnsw::Vectors::load(Path::new(&args[4]), DIM)?;
+            let qids: Vec<String> = std::fs::read_to_string(&args[5])?.lines().map(String::from).collect();
+            let ef: usize = args[7].parse()?;
+            let k = args.get(8).map(|s| s.parse()).transpose()?.unwrap_or(100);
+            let mut seen = hnsw::Visited::new(v.len());
+            let mut w = BufWriter::new(File::create(&args[6])?);
+            let mut times = Vec::new();
+            for (i, qid) in qids.iter().enumerate() {
+                let t = Instant::now();
+                let hits = h.search(&v, q.get(i as u32), k, ef, &mut seen);
+                times.push(t.elapsed().as_secs_f64() * 1000.0);
+                for (rank, (doc, score)) in hits.iter().enumerate() {
+                    writeln!(w, "{}	{}	{}	{:.4}", qid, ids[*doc as usize], rank + 1, score)?;
+                }
+            }
+            w.flush()?;
+            report(times);
         }
         Some("compare") if args.len() == 3 => compare(Path::new(&args[1]), Path::new(&args[2]))?,
         Some("query") if args.len() >= 3 => {
@@ -76,10 +111,16 @@ fn run(dir: &Path, queries: &Path, out: &Path, k: usize) -> Result<()> {
         }
     }
     w.flush()?;
+    report(times);
+    Ok(())
+}
+
+const DIM: usize = 384;
+
+fn report(mut times: Vec<f64>) {
     times.sort_by(f64::total_cmp);
     let pct = |p: f64| times[((times.len() as f64 * p) as usize).min(times.len() - 1)];
     eprintln!("{} queries  p50 {:.2} ms  p99 {:.2} ms", times.len(), pct(0.5), pct(0.99));
-    Ok(())
 }
 
 fn algo() -> String {
